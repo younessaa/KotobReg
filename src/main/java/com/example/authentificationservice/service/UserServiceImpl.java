@@ -4,9 +4,15 @@ import com.example.authentificationservice.domain.Role;
 import com.example.authentificationservice.domain.User;
 import com.example.authentificationservice.repo.RoleRepo;
 import com.example.authentificationservice.repo.UserRepo;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.json.JSONObject;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
@@ -16,7 +22,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Service @RequiredArgsConstructor @Transactional @Slf4j
 public class UserServiceImpl implements UserService, UserDetailsService {
@@ -47,6 +55,18 @@ public class UserServiceImpl implements UserService, UserDetailsService {
     }
 
     @Override
+    public boolean isAllowedToManipulate(String id) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        String currentPrincipalName = authentication.getName();
+        User currentUser = getUser(currentPrincipalName);
+
+        List<String> roles = currentUser.getRoles().stream()
+                .map(Role::getName)
+                .collect(Collectors.toList());
+        return currentUser.getId().equals(id) || roles.contains("ROLE_ADMIN");
+    }
+
+    @Override
     public User saveUser(User user) {
         log.info("user saved {}", user.getFirstName());
         user.setPassword(passwordEncoder.encode(user.getPassword()));
@@ -59,12 +79,27 @@ public class UserServiceImpl implements UserService, UserDetailsService {
     }
 
     @Override
-    public User updateUser(String id, User user) {
-        log.info("user updated {}", user.getFirstName());
-        user.setId(id);
-        user.setPassword(passwordEncoder.encode(user.getPassword()));
+    public User updateUser(String id, Object jsonObj) throws JsonProcessingException {
+        log.info("user updated {}", jsonObj.toString());
+        User user = userRepo.findById(id).get();
+        ObjectWriter ow = new ObjectMapper().writer().withDefaultPrettyPrinter();
+        String json = ow.writeValueAsString(jsonObj);
+        JSONObject jsonObject = new JSONObject(json);
+        Iterator<String> keys = jsonObject.keys();
+        log.info(jsonObject.toString());
+
+        while(keys.hasNext()) {
+            String key = keys.next();
+            if (key.equals("password")) {
+                jsonObject.put(key, passwordEncoder.encode(jsonObject.getString(key)));
+            }
+            user.setField(key, jsonObject.getString(key));
+        }
+        log.info("!! {}", user.getFirstName());
         return userRepo.save(user);
     }
+
+
 
     @Override
     public void deleteUser(String id) {
@@ -74,6 +109,11 @@ public class UserServiceImpl implements UserService, UserDetailsService {
     @Override
     public List<Role> getRoles() {
         return roleRepo.findAll();
+    }
+
+    @Override
+    public Role getRole(String roleName) {
+        return roleRepo.findRoleByName(roleName);
     }
 
     @Override

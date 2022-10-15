@@ -8,10 +8,16 @@ import com.auth0.jwt.interfaces.DecodedJWT;
 import com.example.authentificationservice.domain.Role;
 import com.example.authentificationservice.domain.User;
 import com.example.authentificationservice.service.UserService;
+import com.example.authentificationservice.utils.JWTUtils;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PostAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
@@ -19,6 +25,7 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.net.URI;
+import java.security.Principal;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -34,11 +41,13 @@ public class UserResource {
     private final UserService userService;
 
     @GetMapping("/users")
+    @PostAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<List<User>> getUsers() {
         return ResponseEntity.ok().body(userService.getUsers());
     }
 
     @PostMapping("/users")
+    @PostAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<?> saveUser(@RequestBody User user) {
         URI uri = URI.create(ServletUriComponentsBuilder.fromCurrentContextPath().path("/api/users").toUriString());
         if(userService.existUser(user.getEmail())) {
@@ -51,17 +60,34 @@ public class UserResource {
     }
 
     @PatchMapping("/users/{id}")
-    public ResponseEntity<?> updateUser(@PathVariable(name = "id") String id ,@RequestBody User user) {
+    @PostAuthorize("hasAnyAuthority('ROLE_LIBRARY_OWNER', 'ROLE_ADMIN')")
+    public ResponseEntity<?> updateUser(@PathVariable(name = "id") String id ,@RequestBody Object user) throws NoSuchFieldException, IllegalAccessException, JsonProcessingException {
+
+        if(!userService.isAllowedToManipulate(id)) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error_message", "Not Authorized");
+            return ResponseEntity.status(FORBIDDEN).body(error);
+        }
+
         if(!userService.existUserById(id)) {
             Map<String, String> error = new HashMap<>();
             error.put("error_message", "User Not Exists");
             return ResponseEntity.status(NOT_FOUND).body(error);
         }
+
         return ResponseEntity.ok().body(userService.updateUser(id, user));
     }
 
     @DeleteMapping("/users/{id}")
+    @PostAuthorize("hasAnyAuthority('ROLE_LIBRARY_OWNER', 'ROLE_ADMIN')")
     public ResponseEntity<?> deleteUser(@PathVariable(name = "id") String id) {
+
+        if(!userService.isAllowedToManipulate(id)) {
+            Map<String, String> error = new HashMap<>();
+            error.put("error_message", "Not Authorized");
+            return ResponseEntity.status(FORBIDDEN).body(error);
+        }
+
         if(!userService.existUserById(id)) {
             Map<String, String> error = new HashMap<>();
             error.put("error_message", "User Not Exists");
@@ -72,17 +98,20 @@ public class UserResource {
     }
 
     @GetMapping("/roles")
+    @PostAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<List<Role>> getRoles() {
         return ResponseEntity.ok().body(userService.getRoles());
     }
 
     @PostMapping("/roles")
+    @PostAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<Role> saveRole(@RequestBody Role role) {
         URI uri = URI.create(ServletUriComponentsBuilder.fromCurrentContextPath().path("/api/roles").toUriString());
         return ResponseEntity.created(uri).body(userService.saveRole(role));
     }
 
     @PostMapping("/role/addtouser")
+    @PostAuthorize("hasAuthority('ROLE_ADMIN')")
     public ResponseEntity<?> addRoleToUser(@RequestBody RoleToUserForm form) {
         if(!userService.existUser(form.getEmail())) {
             Map<String, String> error = new HashMap<>();
@@ -93,23 +122,28 @@ public class UserResource {
         return ResponseEntity.ok().build();
     }
 
+    @GetMapping("/profile")
+    public ResponseEntity<User> getProfile(Principal principal) {
+        return ResponseEntity.ok().body(userService.getUser(principal.getName()));
+    }
+
     @GetMapping("/token/refresh")
     public void refreshToken(HttpServletRequest request, HttpServletResponse response) throws IOException {
 
         String authorizationHeader = request.getHeader(AUTHORIZATION);
-        if(authorizationHeader != null && authorizationHeader.startsWith("Bearer ")) {
+        if(authorizationHeader != null && authorizationHeader.startsWith(JWTUtils.PREFIX)) {
             try {
-                String refresh_token = authorizationHeader.substring("Bearer ".length());
-                Algorithm algorithm = Algorithm.HMAC256("secret".getBytes());
+                String refresh_token = authorizationHeader.substring(JWTUtils.PREFIX.length());
+                Algorithm algorithm = Algorithm.HMAC256(JWTUtils.SECRET.getBytes());
                 JWTVerifier verifier = JWT.require(algorithm).build();
                 DecodedJWT decodedJWT = verifier.verify(refresh_token);
                 String email = decodedJWT.getSubject();
                 User user = userService.getUser(email);
                 String access_token = JWT.create()
                         .withSubject(user.getEmail())
-                        .withExpiresAt(new Date(System.currentTimeMillis() + 60 * 60 * 1000))
+                        .withExpiresAt(new Date(System.currentTimeMillis() + JWTUtils.ACCESS_TOKEN))
                         .withIssuer(request.getRequestURL().toString())
-                        .withClaim("roles", user.getRoles().stream().map(Role::getName).collect(Collectors.toList()))
+                        .withClaim(JWTUtils.ROLES, user.getRoles().stream().map(Role::getName).collect(Collectors.toList()))
                         .sign(algorithm);
 
 
